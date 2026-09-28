@@ -1,0 +1,4 @@
+[submodule ".archives"]
+	path = .archives
+	url = git@github.com:carlosmarte/git-submodule-folder.archives.git
+	branch = main
