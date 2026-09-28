@@ -2,3 +2,7 @@
 	path = .archives
 	url = git@github.com:carlosmarte/git-submodule-folder.archives.git
 	branch = main
+[submodule ".ai"]
+	path = .ai
+	url = git@github.com:carlosmarte/git-submodule-folder.ai.git
+	branch = main
