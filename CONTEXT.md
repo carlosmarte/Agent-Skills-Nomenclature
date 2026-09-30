@@ -1,20 +1,114 @@
-# Agent-Skills-Nomenclature
+# Agent Skills Nomenclature: Context
 
-A taxonomy and naming convention for agent skills.
+Reference context for the skill taxonomy. Load this file into an agent session when the agent needs to classify, name, or map skills. For the agent-facing operating procedure see `AGENT.md`; for the human-facing overview see `README.md`.
 
-To keep track of a skill's purpose, execution boundary, and cognitive weight across a complex orchestration framework, you need a highly scannable nomenclature. Because skills operate across three independent dimensions (Execution, Lifecycle, Structure), relying on a single word is insufficient. This repository defines the nine skill types along those dimensions, gives each one a consistent profile (Implementation, Execution, Best For, Trade-offs), and specifies three naming conventions for encoding the taxonomy in node names, telemetry, and file paths.
+To keep track of a skill's purpose, execution boundary, and cognitive weight across a complex orchestration framework, you need a highly scannable nomenclature. Because skills operate across three different dimensions (Execution, Lifecycle, Structure), relying on a single word is insufficient. Three standardization models follow, chosen by where the identifier is used: monorepo file structures, LangGraph node names, or telemetry traces.
 
-**Contents**
+---
 
-- [The Three Dimensions](#the-three-dimensions)
-- [Execution & Compute Paradigms](#execution--compute-paradigms): Procedural, Executable, Hybrid
-- [Lifecycle & Adaptation Models](#lifecycle--adaptation-models): Ephemeral, Adaptive, Static
-- [Structural Composition & Hierarchy](#structural-composition--hierarchy): Atomic, Composite, Meta
-- [Summary Matrix](#summary-matrix)
-- [Naming Conventions](#naming-conventions)
-- [Mapping to LangGraph](#mapping-to-langgraph)
-- [Claude Code Skills](#claude-code-skills)
-- [Repository Files](#repository-files)
+## Naming Conventions
+
+Because skills operate across three dimensions, a single word is insufficient. Three standardization models follow, chosen by where the identifier is used: LangGraph node names and CLI commands, telemetry traces, or monorepo file structures.
+
+### Abbreviation Table
+
+| Dimension | Value | Code |
+|---|---|---|
+| Structure | Atomic | `atm` |
+| Structure | Composite | `cmp` |
+| Structure | Meta | `mta` |
+| Execution | Procedural | `prc` |
+| Execution | Executable | `exe` |
+| Execution | Hybrid | `hyb` |
+| Lifecycle | Static | *(omitted, implicit default)* |
+| Lifecycle | Ephemeral | `eph` |
+| Lifecycle | Adaptive | `adp` |
+
+### 1. The Short-Prefix Matrix (For LangGraph Nodes & CLI Commands)
+
+A two-to-three part prefix format `[Structure]_[Execution]_[Name]-[Lifecycle]` gives immediate context to the execution engine and to the developer reading the orchestration graph.
+
+```
+atm_exe_sqlite_fts          # atomic, executable, static
+cmp_hyb_figma_sync          # composite, hybrid, static
+mta_prc_planner-eph         # meta, procedural, ephemeral
+atm_exe_github_retry-adp    # atomic, executable, adaptive
+```
+
+### 2. The URN / Dot-Notation (For Telemetry & State Checkpointing)
+
+For observability pipelines (mapping to `gen_ai.skill.*` OpenTelemetry semantic conventions) or serializing active skills into session checkpoint files, a dot-notation namespace prevents collision across polyglot architectures.
+
+**Format:** `[domain].[structure].[execution].[lifecycle].[action]`
+
+```
+core.mta.prc.eph.plan
+data.atm.exe.static.sqlite_fts_query
+design.cmp.hyb.static.figma_sync
+```
+
+Wildcards make filtering trivial: `*.exe.*` monitors every deterministic script; `core.mta.*` traces all control-plane operations. Unlike the other two conventions, lifecycle is written explicitly here (`static`) so the segment count stays fixed for parsers.
+
+### 3. The Extension Convention (For Monorepo File Structures)
+
+When managing skills across organization, team, and project levels in a monorepo, encoding the taxonomy into the file extension or directory name clarifies how the harness loads and executes the skill.
+
+**Format:** `[name].[structure].[execution].[ext]`
+
+- **Procedural Skills:** `planner.mta.prc.md` (recognizable as a pure prompt/markdown skill).
+- **Executable Skills:** `sqlite_fts.atm.exe.ts` or `github_retry.atm.exe.rs` (deterministic scripts/binaries).
+- **Hybrid/Composite Skills:** `figma_sync.cmp.hyb/` (a directory bundle containing the procedural `SKILL.md` orchestrator and the local `scripts/` folder).
+
+With a strict extension pattern, the agent bootloader can glob `*.prc.md` files into LLM prompt injection and `*.exe.ts` files into sandboxed subprocess or MCP server initialization. Lifecycle is not encoded in the filename because it is a property of how the harness loads the file, not of the file itself; record it in the skill's manifest or frontmatter instead.
+
+---
+
+## Mapping to LangGraph
+
+Mapping this taxonomy onto a LangGraph architecture means treating skills not as isolated functions but as distinct topological constructs: nodes, subgraphs, conditional edges, and state reducers.
+
+### 1. State Management & Lifecycle Modifiers
+
+*How skills exist within the `StateGraph` memory payload.*
+
+- **Static Skills:** Bound during graph initialization (before `.compile()`). They exist either as hardcoded `tools=[...]` bound to the primary LLM nodes or as immutable system instructions injected into the base `State` payload at kickoff. They persist across all checkpoints.
+- **Ephemeral Skills:** Map to custom `State` reducers (e.g., `active_skills: Annotated[list, add_skills]`). A retrieval node dynamically fetches the skill (e.g., via vector search on current context) and appends it to the state. The reducer logic or a cleanup node pops the skill once the task completes, keeping the memory payload compact for serialization.
+- **Adaptive Skills:** Use LangGraph's checkpointer and thread-level state memory. A node evaluates the output of an execution; if it fails or requires optimization, it mutates the skill's configuration parameters *within the state thread* before a conditional edge loops back for a retry. The skill "adapts" by reading its updated configuration from the checkpoint.
+
+### 2. Node Implementations
+
+*How work is executed via `add_node`.*
+
+- **Procedural Skills:** Standard LLM reasoning nodes (`def procedural_node(state):`). The node ingests the natural-language instructions from state, runs an inference cycle, and appends an AI message (the "thought" or "plan") to the state log.
+- **Executable Skills:** Map directly to LangGraph's `ToolNode`. The agent node outputs a `tool_call`, and a conditional edge routes to the `ToolNode`, a deterministic wrapper around standalone scripts or MCP servers that takes strict schema inputs and returns stdout/stderr as a `ToolMessage`.
+- **Atomic Skills:** The purest 1:1 mapping. A single isolated node (one LLM node or one `ToolNode`) with no internal routing.
+
+### 3. Subgraphs & Complex Topologies
+
+*How higher-order capabilities are built from nested `CompiledGraph` instances.*
+
+- **Hybrid Skills:** A nested subgraph. The entry node is the "Orchestrator" (procedural reasoning) with a specific prompt. It uses conditional edges to route to internal "Leaf" nodes (executable helper scripts), evaluates the leaf outputs, then resolves the subgraph and returns control to the parent.
+- **Composite Skills:** Also subgraphs, but focused on workflow orchestration. A composite subgraph defines a control structure, such as a parallel topology (`Send()` API mapping over a list) or a strictly ordered sequence of atomic nodes, encapsulating that complexity away from the main graph.
+
+### 4. Routing & Edge Execution
+
+*How control flow is manipulated via `add_conditional_edges`.*
+
+- **Meta Skills:** "Supervisor" or "Router" nodes. A Meta Skill node rarely does business logic. It inspects the current `State` (a plan, a reported execution gap), selects which subordinate nodes or skills to invoke next, and returns routing strings. The conditional edge uses that output to dictate the graph's path, letting the architecture orchestrate itself.
+
+### Quick Reference
+
+| Skill type | LangGraph construct |
+|---|---|
+| Procedural | LLM node |
+| Executable | `ToolNode` |
+| Hybrid | Subgraph: orchestrator LLM node + leaf `ToolNode`s |
+| Static | `tools=[...]` / base `State` at compile time |
+| Ephemeral | `State` reducer, populated by a retrieval node, popped by cleanup |
+| Adaptive | Checkpointed config mutated by an evaluator node, retry via conditional edge |
+| Atomic | One node |
+| Composite | Subgraph with `Send()` fan-out or ordered sequence |
+| Meta | Supervisor node feeding `add_conditional_edges` |
 
 ---
 
@@ -162,141 +256,3 @@ Meta skills operate on the architecture itself rather than on the business probl
 | 7 | Atomic | Structure | Primitive, Leaf | One node, one responsibility, no routing |
 | 8 | Composite | Structure | Workflow, Pipeline | Subgraph coordinating children through a control pattern |
 | 9 | Meta | Structure | Supervisor, Router | Operates on the skill graph itself |
-
----
-
-## Naming Conventions
-
-Because skills operate across three dimensions, a single word is insufficient. Three standardization models follow, chosen by where the identifier is used: LangGraph node names and CLI commands, telemetry traces, or monorepo file structures.
-
-### Abbreviation Table
-
-| Dimension | Value | Code |
-|---|---|---|
-| Structure | Atomic | `atm` |
-| Structure | Composite | `cmp` |
-| Structure | Meta | `mta` |
-| Execution | Procedural | `prc` |
-| Execution | Executable | `exe` |
-| Execution | Hybrid | `hyb` |
-| Lifecycle | Static | *(omitted, implicit default)* |
-| Lifecycle | Ephemeral | `eph` |
-| Lifecycle | Adaptive | `adp` |
-
-### 1. The Short-Prefix Matrix (For LangGraph Nodes & CLI Commands)
-
-A two-to-three part prefix format `[Structure]_[Execution]_[Name]-[Lifecycle]` gives immediate context to the execution engine and to the developer reading the orchestration graph.
-
-```
-atm_exe_sqlite_fts          # atomic, executable, static
-cmp_hyb_figma_sync          # composite, hybrid, static
-mta_prc_planner-eph         # meta, procedural, ephemeral
-atm_exe_github_retry-adp    # atomic, executable, adaptive
-```
-
-### 2. The URN / Dot-Notation (For Telemetry & State Checkpointing)
-
-For observability pipelines (mapping to `gen_ai.skill.*` OpenTelemetry semantic conventions) or serializing active skills into session checkpoint files, a dot-notation namespace prevents collision across polyglot architectures.
-
-**Format:** `[domain].[structure].[execution].[lifecycle].[action]`
-
-```
-core.mta.prc.eph.plan
-data.atm.exe.static.sqlite_fts_query
-design.cmp.hyb.static.figma_sync
-```
-
-Wildcards make filtering trivial: `*.exe.*` monitors every deterministic script; `core.mta.*` traces all control-plane operations. Unlike the other two conventions, lifecycle is written explicitly here (`static`) so the segment count stays fixed for parsers.
-
-### 3. The Extension Convention (For Monorepo File Structures)
-
-When managing skills across organization, team, and project levels in a monorepo, encoding the taxonomy into the file extension or directory name clarifies how the harness loads and executes the skill.
-
-**Format:** `[name].[structure].[execution].[ext]`
-
-- **Procedural Skills:** `planner.mta.prc.md` (recognizable as a pure prompt/markdown skill).
-- **Executable Skills:** `sqlite_fts.atm.exe.ts` or `github_retry.atm.exe.rs` (deterministic scripts/binaries).
-- **Hybrid/Composite Skills:** `figma_sync.cmp.hyb/` (a directory bundle containing the procedural `SKILL.md` orchestrator and the local `scripts/` folder).
-
-With a strict extension pattern, the agent bootloader can glob `*.prc.md` files into LLM prompt injection and `*.exe.ts` files into sandboxed subprocess or MCP server initialization. Lifecycle is not encoded in the filename because it is a property of how the harness loads the file, not of the file itself; record it in the skill's manifest or frontmatter instead.
-
----
-
-## Mapping to LangGraph
-
-Mapping this taxonomy onto a LangGraph architecture means treating skills not as isolated functions but as distinct topological constructs: nodes, subgraphs, conditional edges, and state reducers.
-
-### 1. State Management & Lifecycle Modifiers
-
-*How skills exist within the `StateGraph` memory payload.*
-
-- **Static Skills:** Bound during graph initialization (before `.compile()`). They exist either as hardcoded `tools=[...]` bound to the primary LLM nodes or as immutable system instructions injected into the base `State` payload at kickoff. They persist across all checkpoints.
-- **Ephemeral Skills:** Map to custom `State` reducers (e.g., `active_skills: Annotated[list, add_skills]`). A retrieval node dynamically fetches the skill (e.g., via vector search on current context) and appends it to the state. The reducer logic or a cleanup node pops the skill once the task completes, keeping the memory payload compact for serialization.
-- **Adaptive Skills:** Use LangGraph's checkpointer and thread-level state memory. A node evaluates the output of an execution; if it fails or requires optimization, it mutates the skill's configuration parameters *within the state thread* before a conditional edge loops back for a retry. The skill "adapts" by reading its updated configuration from the checkpoint.
-
-### 2. Node Implementations
-
-*How work is executed via `add_node`.*
-
-- **Procedural Skills:** Standard LLM reasoning nodes (`def procedural_node(state):`). The node ingests the natural-language instructions from state, runs an inference cycle, and appends an AI message (the "thought" or "plan") to the state log.
-- **Executable Skills:** Map directly to LangGraph's `ToolNode`. The agent node outputs a `tool_call`, and a conditional edge routes to the `ToolNode`, a deterministic wrapper around standalone scripts or MCP servers that takes strict schema inputs and returns stdout/stderr as a `ToolMessage`.
-- **Atomic Skills:** The purest 1:1 mapping. A single isolated node (one LLM node or one `ToolNode`) with no internal routing.
-
-### 3. Subgraphs & Complex Topologies
-
-*How higher-order capabilities are built from nested `CompiledGraph` instances.*
-
-- **Hybrid Skills:** A nested subgraph. The entry node is the "Orchestrator" (procedural reasoning) with a specific prompt. It uses conditional edges to route to internal "Leaf" nodes (executable helper scripts), evaluates the leaf outputs, then resolves the subgraph and returns control to the parent.
-- **Composite Skills:** Also subgraphs, but focused on workflow orchestration. A composite subgraph defines a control structure, such as a parallel topology (`Send()` API mapping over a list) or a strictly ordered sequence of atomic nodes, encapsulating that complexity away from the main graph.
-
-### 4. Routing & Edge Execution
-
-*How control flow is manipulated via `add_conditional_edges`.*
-
-- **Meta Skills:** "Supervisor" or "Router" nodes. A Meta Skill node rarely does business logic. It inspects the current `State` (a plan, a reported execution gap), selects which subordinate nodes or skills to invoke next, and returns routing strings. The conditional edge uses that output to dictate the graph's path, letting the architecture orchestrate itself.
-
-### Quick Reference
-
-| Skill type | LangGraph construct |
-|---|---|
-| Procedural | LLM node |
-| Executable | `ToolNode` |
-| Hybrid | Subgraph: orchestrator LLM node + leaf `ToolNode`s |
-| Static | `tools=[...]` / base `State` at compile time |
-| Ephemeral | `State` reducer, populated by a retrieval node, popped by cleanup |
-| Adaptive | Checkpointed config mutated by an evaluator node, retry via conditional edge |
-| Atomic | One node |
-| Composite | Subgraph with `Send()` fan-out or ordered sequence |
-| Meta | Supervisor node feeding `add_conditional_edges` |
-
----
-
-## Claude Code Skills
-
-The procedures in `AGENT.md` are packaged as five read-only Claude Code skills under
-[`skills/claude/edge/`](skills/claude/edge/README.md). They read `AGENT.md` and `CONTEXT.md`
-at invocation time rather than restating them, and each is classified and named by the
-nomenclature it implements.
-
-| Ask for | Skill |
-|---|---|
-| The triple of an existing skill | `nomenclature-classify` |
-| Identifiers under the three conventions, or validation of one | `nomenclature-name` |
-| Which type to build before writing a new skill | `nomenclature-choose-type` |
-| A six-check review with a PASS/FAIL verdict | `nomenclature-review` |
-| The LangGraph construct per axis | `nomenclature-langgraph-map` |
-
-Claude Code discovers them through committed symlinks in `.claude/skills/`; the index explains
-the layout and the fixtures that verify them.
-
----
-
-## Repository Files
-
-| File | Audience | Purpose |
-|---|---|---|
-| `README.md` | Humans | This document: the full taxonomy, naming conventions, and LangGraph mapping. |
-| `CONTEXT.md` | Humans and agents | Reference context for loading into an agent session: nomenclature first, then LangGraph mapping, then the skill-type profiles. |
-| `AGENT.md` | Agents | Operating instructions: how to classify a skill on all three axes, how to name it in each convention, and which file to edit for what. |
-| `skills/claude/edge/` | Claude Code agents | Five skills that run the `AGENT.md` procedures (classify, name, choose type, review, LangGraph map), with an index and fixtures. |
-| `.claude/skills/` | Claude Code | One symlink per skill into `skills/claude/edge/`, so a fresh checkout discovers them. |
